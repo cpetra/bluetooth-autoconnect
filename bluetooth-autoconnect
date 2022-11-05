@@ -30,14 +30,7 @@ def dbus_get_child_object_paths(object_path):
 
     return object_paths
 
-
-def connect_devices_for_adapter(adapter_path):
-    if verbose:
-        print(f'scanning for devices on {adapter_path}', flush=True)
-
-    # Get list of devices
-    device_paths = dbus_get_child_object_paths(adapter_path)
-
+def connect_device(device_path):
     # Manage pending connections for non-daemon mode
     def add_pending_connection(device_path):
         if not daemon:
@@ -50,7 +43,6 @@ def connect_devices_for_adapter(adapter_path):
             # mainloop
             if len(pending_connections) == 0:
                 loop.quit()
-
     # Handle the async replies for a connection attempt
     def reply_handler(device_path):
         print(f'successfully connected to device {device_path}', flush=True)
@@ -60,34 +52,40 @@ def connect_devices_for_adapter(adapter_path):
         print(f'error connecting to device {device_path}: {e.get_dbus_message()}', file=sys.stderr, flush=True)
         remove_pending_connection(device_path)
 
+    try:
+        # Read the device's properties
+        obj = bus.get_object('org.bluez', device_path)
+        props = obj.GetAll(
+                'org.bluez.Device1',
+                dbus_interface='org.freedesktop.DBus.Properties')
+
+        if props.get('Connected', False):
+            if verbose:
+                print(f'device {device_path} is already connected', flush=True)
+        elif not props.get('Trusted', False):
+            if verbose:
+                print(f'device {device_path} is not trusted', flush=True)
+        else:
+            print(f'connecting to device {device_path}', flush=True)
+            add_pending_connection(device_path)
+
+            # Attempt to connect to the device
+            obj.Connect(
+                    dbus_interface='org.bluez.Device1',
+                    reply_handler=partial(reply_handler, device_path),
+                    error_handler=partial(error_handler, device_path))
+    except dbus.exceptions.DBusException as e:
+        error_handler(device_path, e)
+
+def connect_devices_for_adapter(adapter_path):
+    if verbose:
+        print(f'scanning for devices on {adapter_path}', flush=True)
+
+    # Get list of devices
+    device_paths = dbus_get_child_object_paths(adapter_path)
+
     for device_path in device_paths:
-        if verbose:
-            print(f'found device {device_path}', flush=True)
-        try:
-            # Read the device's properties
-            obj = bus.get_object('org.bluez', device_path)
-            props = obj.GetAll(
-                    'org.bluez.Device1',
-                    dbus_interface='org.freedesktop.DBus.Properties')
-
-            if props.get('Connected', False):
-                if verbose:
-                    print(f'device {device_path} is already connected', flush=True)
-            elif not props.get('Trusted', False):
-                if verbose:
-                    print(f'device {device_path} is not trusted', flush=True)
-            else:
-                print(f'connecting to device {device_path}', flush=True)
-                add_pending_connection(device_path)
-
-                # Attempt to connect to the device
-                obj.Connect(
-                        dbus_interface='org.bluez.Device1',
-                        reply_handler=partial(reply_handler, device_path),
-                        error_handler=partial(error_handler, device_path))
-        except dbus.exceptions.DBusException as e:
-            error_handler(device_path, e)
-
+        connect_device(device_path)
 
 def connect_devices_for_all_adapters():
     if verbose:
@@ -119,13 +117,11 @@ def connect_devices_for_all_adapters():
 
 def properties_changed_handler(interface_name, changed_properties, invalidated_properties, path):
     # We're only interested in adapters that have been powered on
-    if interface_name == 'org.bluez.Adapter1' and changed_properties.get('Powered', False):
+    if (changed_properties.get('Powered', True)):
         if verbose:
-            print(f'adapter {path} has powered on', flush=True)
-
-        # Try to connect to devices on this adapter
-        connect_devices_for_adapter(path)
-
+            print(f'interface {interface_name} adapter {path} has powered on', flush=True)
+        # Try to connect this device
+        connect_device(path)
 
 def usage():
     print('\n'.join([
